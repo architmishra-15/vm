@@ -2,6 +2,7 @@
 
 A 16-bit virtual machine written in C with a custom assembly language and assembler written in Go.
 
+> TODO: Add address based jumping in jmp instruction
 ## Specs
 
 - **Architecture**: 16-bit
