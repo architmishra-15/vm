@@ -4,6 +4,7 @@
   Format 2: OPCODE(4) | REG(3) | IMMEDIATE(9)
 */
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -72,11 +73,25 @@ typedef struct CPU {
     bool halted;
 } CPU;
 
+typedef struct {
+    CPU *cpu;
+    uint32_t addr;
+} ProgramBuilder;
+
 /*
  * =====================================
  *           HELPER FUNCTIONS
  * =====================================
  */
+
+ProgramBuilder *pb_init(CPU *cpu)
+{
+    ProgramBuilder *pb = malloc(sizeof(ProgramBuilder));
+    pb->cpu = cpu;
+    pb->addr = 0;
+
+    return pb;
+}
 
 static inline uint8_t mem_r8(CPU *cpu, uint32_t addr)
 {
@@ -107,6 +122,59 @@ static inline uint32_t mem_r20(CPU *cpu, uint32_t addr)
     uint8_t b1 = mem_r8(cpu, addr + 1);
     uint8_t b2 = mem_r8(cpu, addr + 2);
     return (uint32_t)(b0 | (b1 << 8) | ((b2 & 0x0F) << 16));
+}
+
+static inline uint16_t make_instr(uint8_t op, uint8_t dst, uint8_t src)
+{
+    return (op << 12) | (dst << 9) | (src << 6);
+}
+
+static inline uint16_t make_instr_imm(uint8_t op, uint8_t dst, uint16_t imm)
+{
+    return (op << 12) | (dst << 9) | (imm & 0x1FF);
+}
+
+static inline uint16_t make_ext_instr(uint8_t ext_op, uint8_t reg1, uint8_t reg2) {
+    return (OP_EXT << 12) | (ext_op << 9) | (reg1 << 6) | (reg2 << 3);
+}
+
+static inline void pb_movi(ProgramBuilder *pb, Register reg, uint16_t imm) {
+    mem_w16(pb->cpu, pb->addr, make_instr_imm(OP_MOVI, reg, imm));
+    pb->addr += 2;
+}
+
+static inline void pb_stdout_str(ProgramBuilder *pb, const char* str) {
+    mem_w16(pb->cpu, pb->addr, make_instr(OP_STDOUT, 0, 0));
+    pb->addr += 2;
+    strcpy((char*)(pb->cpu->mem + pb->addr), str);
+    pb->addr += strlen(str) + 1;
+    if (pb->addr & 1) pb->addr++;
+}
+
+static inline void pb_stdout_reg(ProgramBuilder *pb, Register reg) {
+    mem_w16(pb->cpu, pb->addr, make_instr(OP_STDOUT, 1, reg));
+    pb->addr += 2;
+}
+
+static inline void pb_stdin_num(ProgramBuilder *pb, Register reg) {
+    mem_w16(pb->cpu, pb->addr, make_instr(OP_STDIN, 1, reg));
+    pb->addr += 2;
+}
+
+static inline void pb_stdin_str(ProgramBuilder *pb, Register reg, uint32_t buffer_addr) {
+    pb->cpu->regs[reg] = buffer_addr;
+    mem_w16(pb->cpu, pb->addr, make_instr(OP_STDIN, 0, reg));
+    pb->addr += 2;
+}
+
+static inline void pb_halt(ProgramBuilder *pb) {
+    mem_w16(pb->cpu, pb->addr, make_instr(OP_HALT, 0, 0));
+    pb->addr += 2;
+}
+
+static inline void pb_add(ProgramBuilder *pb, Register dst, Register src) {
+    mem_w16(pb->cpu, pb->addr, make_ext_instr(EXT_ADD, dst, src));
+    pb->addr += 2;
 }
 /*
  * ========================
@@ -273,85 +341,120 @@ void cpu_step(CPU *cpu)
             }
 
         case OP_STDIN:
-            printf("STDIN not implemented yet!\n");
-            break;
+            {
+                // dst field: 0 = read string into memory address in src register
+                //            1 = read number into src register
+                // src field: register to store in
+
+                if (dst == 0) 
+                {
+                    uint32_t addr = cpu->regs[src] & ADDR_MASK;
+                    char buf[256];
+
+                    if (fgets(buf, sizeof(buf), stdin))
+                    {
+                        // trim the newline
+                        size_t len = strlen(buf);
+                        if (len > 0 && buf[len-1] == '\n')
+                        {
+                            buf[len-1] = '\0';
+                        }
+
+                        // Copying to memory
+                        strcpy((char*)(cpu->mem + addr), buf);
+                    }
+                }
+                else {
+                    int value;
+                    if (scanf("%d", &value) == 1) 
+                    {
+                        cpu->regs[src] = (uint16_t)value;
+                        update_flags(cpu, cpu->regs[src]);
+                    }
+
+                    int c;
+                    while ((c = getchar()) != '\n' && c != EOF);
+                }
+                break;
+            }
 
         case OP_EXT:
             {
-                uint8_t ext_op = dst;
+                uint8_t ext_op = dst;  // Bits 9-11 = extended opcode
+                uint8_t reg1 = src;    // Bits 6-8 = first register
+                uint8_t reg2 = (instr >> 3) & 0x7;  // Bits 3-5 = second register
+
                 switch (ext_op)
                 {
                     case EXT_ADD: {
-                        uint32_t result = (uint32_t)cpu->regs[dst] + (uint32_t)cpu->regs[src];
-
-                        // Set carry flag if result > 16 bits
+                        uint32_t result = (uint32_t)cpu->regs[reg1] + (uint32_t)cpu->regs[reg2];
                         set_flag(cpu, FLAG_CARRY, result > 0xFFFF);
 
-                        // Check for signed overflow
-                        bool dst_sign = (cpu->regs[dst] & 0x8000) != 0;
-                        bool src_sign = (cpu->regs[src] & 0x8000) != 0;
+                        bool r1_sign = (cpu->regs[reg1] & 0x8000) != 0;
+                        bool r2_sign = (cpu->regs[reg2] & 0x8000) != 0;
                         bool res_sign = (result & 0x8000) != 0;
-                        bool overflow = (dst_sign == src_sign) && (dst_sign != res_sign);
+                        bool overflow = (r1_sign == r2_sign) && (r1_sign != res_sign);
                         set_flag(cpu, FLAG_OVERFLOW, overflow);
 
-                        cpu->regs[dst] = result & 0xFFFF;
-                        update_flags(cpu, cpu->regs[dst]);
+                        cpu->regs[reg1] = result & 0xFFFF;
+                        update_flags(cpu, cpu->regs[reg1]);
                         break;
                     }
 
                     case EXT_SUB: {
-                        uint32_t result = (uint32_t)cpu->regs[dst] - (uint32_t)cpu->regs[src];
+                        uint32_t result = (uint32_t)cpu->regs[reg1] - (uint32_t)cpu->regs[reg2];
+                        set_flag(cpu, FLAG_CARRY, cpu->regs[reg1] < cpu->regs[reg2]);
 
-                        // Carry flag set if borrow occurred
-                        set_flag(cpu, FLAG_CARRY, cpu->regs[dst] < cpu->regs[src]);
-
-                        // Overflow check for subtraction
-                        bool dst_sign = (cpu->regs[dst] & 0x8000) != 0;
-                        bool src_sign = (cpu->regs[src] & 0x8000) != 0;
+                        bool r1_sign = (cpu->regs[reg1] & 0x8000) != 0;
+                        bool r2_sign = (cpu->regs[reg2] & 0x8000) != 0;
                         bool res_sign = (result & 0x8000) != 0;
-                        bool overflow = (dst_sign != src_sign) && (dst_sign != res_sign);
+                        bool overflow = (r1_sign != r2_sign) && (r1_sign != res_sign);
                         set_flag(cpu, FLAG_OVERFLOW, overflow);
 
-                        cpu->regs[dst] = result & 0xFFFF;
-                        update_flags(cpu, cpu->regs[dst]);
+                        cpu->regs[reg1] = result & 0xFFFF;
+                        update_flags(cpu, cpu->regs[reg1]);
                         break;
                     }
 
                     case EXT_AND:
-                        cpu->regs[dst] &= cpu->regs[src];
-                        update_flags(cpu, cpu->regs[dst]);
+                        cpu->regs[reg1] &= cpu->regs[reg2];
+                        update_flags(cpu, cpu->regs[reg1]);
                         break;
 
                     case EXT_OR:
-                        cpu->regs[dst] |= cpu->regs[src];
-                        update_flags(cpu, cpu->regs[dst]);
+                        cpu->regs[reg1] |= cpu->regs[reg2];
+                        update_flags(cpu, cpu->regs[reg1]);
                         break;
 
                     case EXT_XOR:
-                        cpu->regs[dst] ^= cpu->regs[src];
-                        update_flags(cpu, cpu->regs[dst]);
+                        cpu->regs[reg1] ^= cpu->regs[reg2];
+                        update_flags(cpu, cpu->regs[reg1]);
                         break;
 
-
-                    case EXT_RET:
-                        {
-                            uint32_t high = stack_pop16(cpu) & 0xF;
-                            uint32_t low  = stack_pop16(cpu);
-                            cpu->pc = (high << 16) | low;
-                            break;
-                        }
+                    case EXT_RET: {
+                        uint32_t high = stack_pop16(cpu) & 0xF;
+                        uint32_t low  = stack_pop16(cpu);
+                        cpu->pc = (high << 16) | low;
+                        break;
+                    }
 
                     case EXT_LOAD:
-                        cpu->regs[src] = mem_r16(cpu, cpu->regs[src]);
-                        update_flags(cpu, cpu->regs[src]);
+                        cpu->regs[reg1] = mem_r16(cpu, cpu->regs[reg2]);
+                        update_flags(cpu, cpu->regs[reg1]);
                         break;
 
                     case EXT_STORE:
-                        // Use unused bits for addressing
-                        mem_w16(cpu, cpu->regs[src], cpu->regs[(instr >> 3) & 0x7]);
+                        mem_w16(cpu, cpu->regs[reg1], cpu->regs[reg2]);
+                        break;
+
+                    default:
+                        printf("Unknown extended opcode: 0x%X\n", ext_op);
+                        cpu->halted = true;
                         break;
                 }
+                break;
             }
+
         default:
             printf("Unknown opcode: 0x%X at PC=0x%05X\n", opcode, cpu->pc - 2);
             cpu->halted = true;
@@ -362,20 +465,6 @@ void cpu_step(CPU *cpu)
 void cpu_run(CPU *cpu)
 {
     while (!cpu->halted) cpu_step(cpu);
-}
-
-static inline uint16_t make_instr(uint8_t op, uint8_t dst, uint8_t src)
-{
-    return (op << 12) | (dst << 9) | (src << 6);
-}
-
-static inline uint16_t make_instr_imm(uint8_t op, uint8_t dst, uint16_t imm)
-{
-    return (op << 12) | (dst << 9) | (imm & 0x1FF);
-}
-
-static inline uint16_t make_ext_instr(uint8_t ext_op, uint8_t reg1, uint8_t reg2) {
-    return (OP_EXT << 12) | (ext_op << 9) | (reg1 << 6) | (reg2 << 3);
 }
 
 void cpu_dump(CPU *cpu) 
@@ -395,7 +484,6 @@ void cpu_dump(CPU *cpu)
     printf("=================\n\n");
 }
 
-
 int main(void)
 {
     printf("16-bit VM Demo\n");
@@ -407,125 +495,28 @@ int main(void)
         return 1;
     }
 
-    // Load a simple program into memory
-    uint32_t addr = 0;
+    ProgramBuilder *pb = pb_init(cpu);
 
-    // Test 1: Add 5 + 10
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R0, 5));   // R0 = 5
-    addr += 2;
+    // Much cleaner!
+    pb_stdout_str(pb, "Enter first number:");
+    pb_stdin_num(pb, R0);
+    
+    pb_stdout_str(pb, "Enter second number:");
+    pb_stdin_num(pb, R1);
+    
+    pb_add(pb, R0, R1);
+    
+    pb_stdout_str(pb, "Result: ");
+    pb_stdout_reg(pb, R0);
+    pb_stdout_str(pb, "\n");
+    
+    pb_halt(pb);
 
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R1, 10));  // R1 = 10
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R0, R1));       // R0 = R0 + R1
-    addr += 2;
-
-    printf("Test 1: After R0 = 5 + 10:\n");
-    cpu_step(cpu);  // MOVI R0, 5
-    cpu_step(cpu);  // MOVI R1, 10
-    cpu_step(cpu);  // ADD R0, R1
+    // Run
+    cpu_run(cpu);
+    
     cpu_dump(cpu);
-
-    // Test 2: Compare R0 with 15
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R2, 15));  // R2 = 15
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(OP_CMP, R0, R2));       // Compare R0, R2
-    addr += 2;
-
-    printf("Test 2: After comparing R0 (15) with R2 (15):\n");
-    cpu_step(cpu);  // MOVI R2, 15
-    cpu_step(cpu);  // CMP R0, R2
-    cpu_dump(cpu);
-
-    // Test 3: Overflow (32767 + 1)
-    // Build 32767 using multiple instructions
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R3, 0x1FF)); // R3 = 511
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R5, 0x1FF)); // R5 = 511
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 511 + 511 = 1022
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 1022 + 511 = 1533
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 1533 + 511 = 2044
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 2044 + 511 = 2555
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 2555 + 511 = 3066
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 3066 + 511 = 3577
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R5));         // R3 = 3577 + 511 = 4088
-    addr += 2;
-
-    // R3 = 0x7F, then shift left 8 bits, then add 0xFF
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R3, 0x7F));  // R3 = 127
-    addr += 2;
-
-    uint32_t data_addr = 0x1000;  // Store data at 0x1000
-    mem_w16(cpu, data_addr, 0x7FFF);  // Store 32767 as data
-
-    // Clear previous instructions and start fresh for overflow test
-    addr = 0x10;  // Start at a new address
-    cpu->pc = 0x10;  // Jump PC here
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R4, 1));     // R4 = 1
-    addr += 2;
-
-    // Manually set R3 for demo (acknowledge this is cheating)
-    cpu->regs[R3] = 0x7FFF;  // Set R3 = 32767 directly
-
-    mem_w16(cpu, addr, make_instr(EXT_ADD, R3, R4));         // R3 = 32767 + 1
-    addr += 2;
-
-    mem_w16(cpu, addr, make_instr(OP_STDOUT, R5, 0xF));
-    addr += 2;
-
-    printf("Test 3: Overflow (32767 + 1) - R3 manually set to 0x7FFF:\n");
-    cpu_step(cpu);  // MOVI R4, 1
-    cpu_step(cpu);  // ADD R3, R4
-    cpu_dump(cpu);
-
-    cpu_dump(cpu);
-
-    // cpu_step(cpu);  // HALT
-
-    mem_w16(cpu, addr, make_instr(OP_STDOUT, 0, 0));  // dst=0 means string follows
-addr += 2;
-
-    // Write string data
-    const char* msg = "Hello!";
-    strcpy((char*)(cpu->mem + addr), msg);
-    addr += strlen(msg) + 1;
-    if (addr & 1) addr++;  // Align to even address
-
-    // Print number from register
-    mem_w16(cpu, addr, make_instr_imm(OP_MOVI, R2, 99));
-    addr += 2;
-    mem_w16(cpu, addr, make_instr(OP_STDOUT, 1, R2));  // dst=1, src=register
-    addr += 2;
-
-    printf("After String printing -\n");
-    cpu_step(cpu);
-    cpu_step(cpu);
-    cpu_step(cpu);
-    cpu_step(cpu);
-
-    mem_w16(cpu, addr, make_instr(OP_HALT, 0, 0));          // HALT
-    addr += 2;
-
-    cpu_step(cpu);
-
-    cpu_dump(cpu);
-
+    free(pb);
     cpu_destroy(cpu);
     return 0;
 }

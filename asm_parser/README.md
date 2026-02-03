@@ -14,4 +14,4 @@ assembler/
 └── writer.go         # Binary & listing output
 ```
 
-> TODO: Write a parser and lexer
+> TODO: Implement parser and lexer
