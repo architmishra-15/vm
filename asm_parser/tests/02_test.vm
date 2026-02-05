@@ -1,0 +1,6 @@
+# Simple test
+R0 -1 PUT
+R1 15 PUT
+R0 R1 SUM
+R0 PRINT
+DIE

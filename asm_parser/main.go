@@ -5,7 +5,6 @@ import (
 	"os"
 )
 
-
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <input.vm> <output.bin>\n", os.Args[0])
@@ -21,7 +20,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	byteCode, err := MainAssembly(string(source))
+	byteCode := []byte("cbin")
+	temp, err := MainAssembly(string(source))
+	
+	for _, b := range temp {
+		byteCode = append(byteCode, b)
+	}
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -34,7 +39,6 @@ func main() {
 	}
 
 	fmt.Printf("Success: %d bytes written to %s\n", len(byteCode), outputFile)
-
 }
 
 func MainAssembly(source string) ([]byte, error) {
