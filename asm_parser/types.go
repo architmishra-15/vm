@@ -10,15 +10,16 @@ const (
 	TokenOpcode
 	TokenExtOpcode
 	TokenComment
-	TokenLabel // For future when you add labels
+	TokenLabel
+	TokenUndefined
 )
 
 // Token represents a single assembly token
 type Token struct {
-	Type  TokenType
-	Value string
-	Line  int
-	Col   int
+	Value string    // 16 bytes (string header)
+	Line  int       // 8 bytes
+	Col   int       // 8 bytes
+	Type  TokenType // 8 bytes (int on 64-bit)
 }
 
 // Line represents a parsed line of assembly
@@ -30,14 +31,14 @@ type Line struct {
 
 // Instruction represents a parsed instruction before encoding
 type Instruction struct {
-	Opcode 	 	Opcode
-	ExtOpcode 	ExtOpcode
-	Dst			Register
-	Src 		Register
-	Immediate	uint16
-	IsExt     bool // Is this an extended opcode?
-	IsImm     bool // Does this use immediate value?
-	Line      int  // Line number for error reporting
+	Line      int       // 8 bytes (align first for best packing)
+	Immediate uint16    // 2 bytes
+	Opcode    Opcode    // 1 byte  
+	ExtOpcode ExtOpcode // 1 byte
+	Dst       Register  // 1 byte
+	Src       Register  // 1 byte
+	IsExt     bool      // 1 byte
+	IsImm     bool      // 1 byte
 }
 
 // TODO: Extend this with more values in the future

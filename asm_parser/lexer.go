@@ -6,17 +6,28 @@ import (
 
 type Lexer struct {
 	lines []string
+	internPool map[string]string // Reuse common strings
 }
 
 func NewLexer(src string) *Lexer {
 	return &Lexer{
 		lines: strings.Split(src, "\n"),
+		internPool: make(map[string]string, 64),
 	}
+}
+
+func (l *Lexer) intern(s string) string {
+    if interned, ok := l.internPool[s]; ok {
+        return interned
+    }
+    l.internPool[s] = s
+    return s
 }
 
 // I honestly hate K&R style braces, why tf Go don't allow Allaman Style?!
 func (l *Lexer) Tokenize() ([]Line, error) {
-	var result []Line
+
+	result := make([]Line, 0, len(l.lines))
 
 	for lineNum, rawLine := range l.lines {
 		line := l.tokenizeLine(rawLine, lineNum+1) 
@@ -54,13 +65,15 @@ func (l *Lexer) tokenizeLine(rawLine string, lineNo int) *Line {
 		return nil
 	}
 
+	line = strings.ReplaceAll(line, ",", " ")
+	fields := strings.Fields(line)
+
 	parsedLine := &Line {
 		Original: original,
 		Number: lineNo,
-		Tokens: []Token{},
+		Tokens: make([]Token, 0, len(fields)),
 	}
 
-	fields := strings.Fields(line)
 	for col, field := range fields {
 		token := l.identifyToken(field, lineNo, col)
 		parsedLine.Tokens = append(parsedLine.Tokens, token)
@@ -71,11 +84,25 @@ func (l *Lexer) tokenizeLine(rawLine string, lineNo int) *Line {
 
 func (l *Lexer) identifyToken(field string, line, col int) Token {
 	field = strings.ToUpper(field)
+	field = l.intern(field)
 
 	token := Token {
 		Value: field,
 		Line: line,
 		Col: col,
+	}
+
+	// Check for label (avoid creating new string if not needed)
+    if len(field) > 0 && field[len(field)-1] == ':' {
+        token.Type = TokenLabel
+        token.Value = l.intern(field[:len(field)-1]) // ✅ Slice instead of TrimSuffix
+        return token
+	}
+
+	// Label definition (ends with :)
+    if strings.HasSuffix(field, ":") {
+        token.Type = TokenLabel
+        token.Value = l.intern(strings.TrimSuffix(field, ":"))
 	}
 
 	// Check for register
@@ -102,7 +129,7 @@ func (l *Lexer) identifyToken(field string, line, col int) Token {
 		return token
 	}
 
-	// For future: could be a label
+	// Anything not matched will be Undefined tokens
 	token.Type = TokenLabel
 	return token
 }

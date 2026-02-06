@@ -20,45 +20,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	byteCode := []byte("cbin")
-	temp, err := MainAssembly(string(source))
-	
-	for _, b := range temp {
-		byteCode = append(byteCode, b)
-	}
-
+	assembler := NewAssembler()
+	instructions, err := assembler.Assemble(string(source))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	writer := NewWriter()
-	if err := writer.WriteBinary(outputFile, byteCode); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing: %v\n", err)
-		os.Exit(1)
+	fmt.Println("=== Instructions ===")
+	for i, instr := range instructions {
+		fmt.Printf("[%04X] %v\n", i*2, instr)
 	}
 
-	fmt.Printf("Success: %d bytes written to %s\n", len(byteCode), outputFile)
-}
-
-func MainAssembly(source string) ([]byte, error) {
-	// Tokenizing
-	lexer := NewLexer(source)
-	lines, err := lexer.Tokenize()
-	if err != nil {
-		return nil, err
+	fmt.Println("\n=== Symbol Table ===")
+	for label, addr := range assembler.symbolTable.All() {
+		fmt.Printf("%s → 0x%04X\n", label, addr)
 	}
 
-	// Parsing
-	parser := NewParser()
-	instructions, err := parser.Parse(lines)
-	if err != nil {
-		return nil, err
-	}
-
-	// Encode
 	encoder := NewEncoder()
 	bytecode := encoder.EncodeAll(instructions)
 
-	return bytecode, nil
+	writer := NewWriter()
+	if err := writer.WriteBinary(outputFile, bytecode); err != nil {
+		fmt.Fprintf(os.Stderr, "Write error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n✓ Successfully assembled %d instructions (%d bytes) to %s\n",
+		len(instructions), len(bytecode), outputFile)
 }
